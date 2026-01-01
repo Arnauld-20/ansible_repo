@@ -1,10 +1,10 @@
 
 terraform {
-  required_version = ">= 1.8.0"
+  required_version = ">= 1.5.7"
 
   backend "s3" {
     bucket         = "arnauld-bucket-0828"
-    key            = "Arnauld-20/repo_terraform/terraform.tfstate"
+    key            = "Arnauld-20/ansible_repo/terraform.tfstate"
     region         = "us-east-1"
     dynamodb_table = "terraform-state-locks"
     encrypt        = true
