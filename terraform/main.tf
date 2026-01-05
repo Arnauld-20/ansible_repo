@@ -19,7 +19,9 @@ resource "aws_instance" "linux_target" {
 resource "aws_instance" "windows_target" {
   ami           = var.ami_id_1
   instance_type = "t3.micro"
-  key_name      = var.key_name
+
+
+  key_name = var.key_name
   tags = {
     Name = "my_worker2_instance"
   }
