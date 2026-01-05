@@ -1,0 +1,37 @@
+---
+- name: Deploy Nginx on Linux Server
+  hosts: linux_servers
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Start nginx
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+- name: Deploy Nginx on Windows Server
+  hosts: windows_servers
+  tasks:
+    - name: Install Chocolatey
+      win_chocolatey:
+        name: chocolatey
+        state: present
+
+    - name: Install nginx
+      win_chocolatey:
+        name: nginx
+        state: present
+
+    - name: Start nginx
+      win_service:
+        name: nginx
+        state: started
