@@ -12,7 +12,7 @@ resource "aws_instance" "linux_target" {
   instance_type = "t2.micro"
   key_name      = var.key_name
   tags = {
-    Name = "my_worker1_instance"
+    Name = "linux_worker_instance"
   }
 }
 
@@ -23,6 +23,6 @@ resource "aws_instance" "windows_target" {
 
   key_name = var.key_name
   tags = {
-    Name = "my_worker2_instance"
+    Name = "windows_worker_instance"
   }
 }
