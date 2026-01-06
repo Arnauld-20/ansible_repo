@@ -1,116 +1,208 @@
-# Terraform S3 backend — steps and why we need it
-
-## Why use an S3 backend
-- Stores Terraform state remotely so team members share one source of truth.
-- Enables state locking (with DynamoDB) to prevent concurrent writes/corruption.
-- Provides durability (S3 versioning) and encryption of state.
-- Allows CI/CD pipelines to run Terraform against the same state.
-
-## Prerequisites
-- AWS credentials with permissions to create S3 bucket, DynamoDB table, and manage objects.
-- AWS CLI or Console access.
-- Terraform installed.
-
-## Quick steps (high level)
-1. Create an S3 bucket for state.
-2. Enable versioning and server-side encryption on the bucket.
-3. Create a DynamoDB table for state locking (primary key: LockID).
-4. Add a backend configuration to your Terraform code (backend.tf or CLI backend-config).
-5. Initialize Terraform (terraform init) and migrate state if needed.
-
-## Example commands (AWS CLI)
-Replace <region>, <bucket-name>, <dynamodb-table> accordingly.
-
-Create bucket, enable versioning and encryption:
+Table of Contents:
+1. [Architecture Overview] (#architecture-overview)
+2. [Prerequisites](#prerequisites)
+3. [Part 1: Terraform Backend Setup] (part-1-terraform-backend-setup)
+4. [Part 2: GitHub OIDC Identity Provider] (part-2-github-oidc-identity-provider)
+5. [Part 3: Infrastructure Deployment] (part-3-infrastructure-deployment)
+6. [Part 4: Ansible Configuration] (part-4-ansible-configuration)
+7. [Part 5: Windows Server Access] (part-5-windows-server-access)
+8. [Troubleshooting Guide] (troubleshooting-guide)
+--------------------------------------
+Prerequisites 
+10. Architecture Overview
+Infrastructure Components
+- 1 Ansible Control Node (Ubuntu Linux EC2)
+- 1 Linux Target Server (Ubuntu Linux EC2)
+- 1 Windows Target Server (Windows Server 2022 EC2)
+- S3 Backend for Terraform state storage
+- DynamoDB Table for state locking
+- GitHub OIDC Provider for secure CI/CD
+Network Architecture
+- VPC with public subnet (10.0.0.0/16)
+- Internet Gateway for public access
+- Security groups for each server type
+- Private IP communication between Ansible and targets
+Deployment Flow
+Developer → GitHub Actions → AWS (OIDC) → Terraform → EC2 Instances → Ansible →
+Nginx Deployment
+Prerequisites
+Required Tools
+- AWS CLI configured with credentials
+- Terraform (v1.6+)
+- Git and GitHub account
+- SSH key pair created in AWS
+- Text editor (VS Code recommended)
+Required Information
+- AWS Account ID
+- GitHub username/organization
+- Your public IP address
+- EC2 key pair name
+Getting Your Public IP
 ```bash
-aws s3api create-bucket --bucket my-terraform-state-bucket --region us-east-1
-aws s3api put-bucket-versioning --bucket my-terraform-state-bucket --versioning-configuration Status=Enabled
-aws s3api put-bucket-encryption --bucket my-terraform-state-bucket --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-aws s3api put-public-access-block --bucket my-terraform-state-bucket --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+curl ifconfig.me
 ```
-<!-- we used Terraform instead of this code 14-19 -->
+------------------------------------------------------------------------------------------------
+Part 1: Terraform Backend Setup
 
-Create DynamoDB table for locking:
-```bash
-aws dynamodb create-table \
-    --table-name terraform-state-lock \
-    --attribute-definitions AttributeName=LockID,AttributeType=S \
-    --key-schema AttributeName=LockID,KeyType=HASH \
-    --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5
-```
+Step 1.1: Create Backend Infrastructureand deploy in the main Terraform 
 
-## Example backend.tf
-Place this in your repo (e.g., backend.tf) or pass equivalent via -backend-config:
-```hcl
-terraform {
-    backend "s3" {
-        bucket         = "my-terraform-state-bucket"
-        key            = "path/to/terraform.tfstate"  # e.g., env/project/terraform.tfstate
-        region         = "us-east-1"
-        dynamodb_table = "terraform-state-lock"
-        encrypt        = true
-    }
-}
-```
+https://github.com/Arnauld-20/ansible_repo/blob/main/terraform/providers.tf
+---------
 
-## Initialize and migrate state
-- If you already have local state and added backend.tf, run:
-```bash
+---------------------------------------------------------
+Part 2: GitHub Access keys Identity Provider
+From AWS - get the keys pairs and download the .pem files 
+-----------
+Step 2.2: Configure GitHub Secrets
+1. Go to repository: Settings → Secrets and variables → Actions
+2. Add secret:
+- Name: `AWS_ROLE_ARN`
+- Value: `arn:aws:iam::123456789012:role/GitHubActionsRole`
+
+Step 2.3: GitHub Actions Workflow
+File: `.github/workflows/terraform.yml`
+------------------------
+name: Terraform Deploy
+on:
+push:
+branches: [main]
+permissions:
+id-token: write
+contents: read
+jobs:
+terraform:
+runs-on: ubuntu-latest
+steps:
+- uses: actions/checkout@v4
+- name: Configure AWS Credentials
+uses: aws-actions/configure-aws-credentials@v4
+with:
+role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+aws-region: us-east-1
+- name: Setup Terraform
+uses: hashicorp/setup-terraform@v3
+- name: Terraform Apply
+run: |
 terraform init
-# Follow prompts to migrate local state to the S3 backend
-```
-- Or specify backend config at init:
+
+-----------------------
+Part 3: Infrastructure Deployment
+Step 3.1: Create Variables File
+File: `terraform.tfvars`
+-------------------
+aws_region = "us-east-1"
+key_name = "your-key-pair-name"
+my_ip = "203.0.113.45/32" # YOUR public IP with /32
+--------------------
+Step 3.2: Deploy Infrastructure
 ```bash
-terraform init \
-    -backend-config="bucket=my-terraform-state-bucket" \
-    -backend-config="key=env/prod/terraform.tfstate" \
-    -backend-config="region=us-east-1" \
-    -backend-config="dynamodb_table=terraform-state-lock" \
-    -backend-config="encrypt=true"
-```
+------------------
+terraform init
+terraform plan
 
-## Minimal IAM policy for Terraform user
-Allow S3 and DynamoDB operations Terraform needs:
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "s3:GetObject",
-                "s3:PutObject",
-                "s3:ListBucket",
-                "s3:DeleteObject",
-                "s3:GetBucketVersioning",
-                "s3:PutBucketVersioning",
-                "s3:GetBucketEncryption",
-                "s3:PutBucketEncryption"
-            ],
-            "Resource": [
-                "arn:aws:s3:::my-terraform-state-bucket",
-                "arn:aws:s3:::my-terraform-state-bucket/*"
-            ]
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "dynamodb:PutItem",
-                "dynamodb:GetItem",
-                "dynamodb:DeleteItem",
-                "dynamodb:DescribeTable",
-                "dynamodb:UpdateItem"
-            ],
-            "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/terraform-state-lock"
-        }
-    ]
+----------------
+Step 3.3: Record Outputs
+After deployment, save these values:
+- Ansible control node public IP
+- Linux target private IP
+- Windows target private IP
+- Windows target public IP
+---------------------------------------------------------------
+Part 4: Ansible Configuration
+Step 4.1: SSH into Ansible Control Node
+```bash
+ssh -i your-key.pem ubuntu@ANSIBLE_CONTROL_IP
+```
+Step 4.2: Copy SSH Key to Control Node
+```bash
+# From your local machine
+scp -i your-key.pem your-key.pem ubuntu@ANSIBLE_CONTROL_IP:~/.ssh/id_rsa
+ssh ubuntu@ANSIBLE_CONTROL_IP "chmod 600 ~/.ssh/id_rsa"
+```
+Step 4.3: Create Ansible Inventory
+File: `~/inventory.ini`
+```yaml
+download the inventory files https://github.com/Arnauld-20/ansible_repo/blob/main/ansible_deployments/inventory.ini
+```
+Step 4.4: Create Nginx Deployment Playbook
+File: `~/deploy_nginx.yml`
+```yaml
+https://github.com/Arnauld-20/ansible_repo/blob/main/ansible_deployments/deploy_nginx.yml
+
+Step 4.5: Test Connectivity
+```bash
+ansible linux_servers -m ping -i ~/inventory.ini
+ansible windows_servers -m win_ping -i ~/inventory.ini
+```
+Step 4.6: Deploy Nginx
+```bash
+ansible-playbook -i ~/inventory.ini deploy_nginx.yml
+```
+Step 4.7: Verify Deployment
+```bash
+curl http://LINUX_PUBLIC_IP
+curl http://WINDOWS_PUBLIC_IP
+```
+-------------------------------------------------------
+Part 5: Windows Server Access
+Required Port: 3389 (RDP)
+Already configured in Terraform security group for your IP.
+Step 5.1: Get Windows Password
+Method 1: AWS Console
+1. EC2 Console → Select Windows instance
+2. Actions→ Security → Get Windows Password
+3. Upload your `. pem` key file
+4. Click **Decrypt Password**
+5. Copy the password
+Method 2: AWS CLI
+```bash
+aws ec2 get-password-data \
+--instance-id i-xxxxx \
+--priv-launch-key ~/.ssh/your-key.pem \
+--query 'PasswordData' \
+--output text | base64 -d | openssl rsautl -decrypt -inkey ~/.ssh/your-key.pem
+```
+Step 5.2: Connect via RDP
+Windows
+1. Press `Win + R`
+2. Type `mstsc`
+3. Enter Windows server public IP
+4. Username: `Administrator`
+5. Password: (from Step 5.1)
+macOS:
+1. Download Microsoft Remote Desktop from App Store
+2. Add PC with public IP
+3. Username: `Administrator`
+4. Password: (from Step 5.1)
+xfreerdp /u:Administrator /p:'PASSWORD' /v:PUBLIC_IP /size:1920x1080
+Linux:
+```bash
+```
+Step 5.3: Test Port Connectivity
+```bash
+nc -zv WINDOWS_PUBLIC_IP 3389
+```
+troubleshooting of windows:
+----------------------------------------------updatedddd----
+Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH*'
+
+Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
+
+**--------------
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+
+Alternatively use this command to install:
+dism /Online /Add-Capability /CapabilityName:OpenSSH.Server~~~~0.0.1.0
+**------------
+
+Start-Service sshd
+
+Set-Service -Name sshd -StartupType 'Automatic'
+
+if (!(Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue | Select-Object Name, Enabled)) {
+    Write-Output "Firewall Rule 'OpenSSH-Server-In-TCP' does not exist, creating it..."
+    New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
+} else {
+    Write-Output "Firewall rule 'OpenSSH-Server-In-TCP' has been created and exists."
 }
-```
 
-## Notes / best practices
-- Use a per-environment key path (e.g., env/project/terraform.tfstate).
-- Enable S3 versioning so you can recover old state.
-- Restrict bucket access with least privilege and block public access.
-- Use MFA-protected or temporary credentials in CI where possible.
-
-Place this README content into /Users/cameronmonthe/Desktop/workplace/general-template/README.md and update the sample names and ARNs to match your account.
